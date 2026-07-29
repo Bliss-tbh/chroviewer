@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { useRouter } from '@tanstack/react-router';
 import { Result } from 'better-result';
@@ -21,7 +21,7 @@ interface UseViewerShareOptions {
   selectedDifficultyIndex: number;
   settings: ViewerSettings;
   sourceLink: ViewerSourceLink | null;
-  setError: Dispatch<SetStateAction<string>>;
+  setError: (message: string) => void;
 }
 
 export function useViewerShare({

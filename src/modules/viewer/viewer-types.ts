@@ -44,3 +44,5 @@ export interface ActiveSelection {
 export type ViewerPanel = 'share' | 'shortcuts' | 'speed' | 'lights' | 'camera' | 'volume' | null;
 
 export type ViewerSource = ConfigurableViewerSource | 'link';
+
+export type AlertState = string | { message: string; type?: 'destructive' | 'informative' };

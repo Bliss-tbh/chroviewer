@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from 'react';
 
 import { useRouter, useSearch } from '@tanstack/react-router';
+import { AnimatePresence } from 'framer-motion';
 import {
   AlertCircle,
   Download,
@@ -46,10 +47,11 @@ import { useViewerSession } from './use-viewer-session';
 import { useViewerShare } from './use-viewer-share';
 import { useViewerSources } from './use-viewer-sources';
 import { quantizedBeatAt } from './viewer-timeline';
-import type { ViewerPanel } from './viewer-types';
+import type { AlertState, ViewerPanel } from './viewer-types';
 
-import { Alert } from '@/components/ui/alert';
+import { MotionAlert } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
+import { CollapsibleWord } from '@/components/ui/collapsible-word';
 
 import { cn } from '@/lib/utils';
 
@@ -80,7 +82,9 @@ export function ViewerShell() {
   );
   const effectiveSettingsRef = useRef(effectiveSettings);
   effectiveSettingsRef.current = effectiveSettings;
-  const [error, setError] = useState('');
+  const [alert, setError] = useState<AlertState>('');
+  const alertMessage = typeof alert === 'string' ? alert : alert.message;
+  const alertVariant = typeof alert === 'object' && alert.type === 'informative' ? 'informative' : 'destructive';
   const [lightshowMode, setLightshowMode] = useState<LightshowMode>(
     search.lightshow ?? (settings.staticLights ? 'static' : 'full'),
   );
@@ -425,7 +429,14 @@ export function ViewerShell() {
       }}
       onDrop={(event) => {
         event.preventDefault();
-        if (!remoteActive) void sources.loadFiles([...event.dataTransfer.files]);
+        if (!remoteActive) {
+          const uploadedFiles = [...event.dataTransfer.files];
+          if (sources.isWaitingForLocalMap) {
+            sources.provideLocalMapFiles(uploadedFiles);
+          } else {
+            void sources.loadFiles(uploadedFiles);
+          }
+        }
       }}
     >
       <div
@@ -522,7 +533,12 @@ export function ViewerShell() {
         multiple
         accept=".dat,.bsor,.json,.zip,.ogg,.egg,.wav,.mp3"
         onChange={(event) => {
-          void sources.loadFiles([...(event.currentTarget.files ?? [])]);
+          const uploadedFiles = [...(event.currentTarget.files ?? [])];
+          if (sources.isWaitingForLocalMap) {
+            sources.provideLocalMapFiles(uploadedFiles);
+          } else {
+            void sources.loadFiles(uploadedFiles);
+          }
           event.currentTarget.value = '';
         }}
       />
@@ -736,33 +752,67 @@ export function ViewerShell() {
             onToggleHitsounds={toggleHitsounds}
           />
         )}
+      <div className="pointer-events-none fixed right-0 bottom-20 left-0 z-50 flex justify-center">
+        <AnimatePresence mode="wait">
+          {alertMessage !== '' && (
+            <MotionAlert
+              key={alertMessage}
+              initial={{ opacity: 0, y: 50, x: 0 }}
+              animate={{ opacity: 1, y: 0, x: 0 }}
+              exit={{ opacity: 0, x: 100, scale: 0.95 }}
+              transition={{ type: 'spring', damping: 20, stiffness: 300 }}
+              drag="x"
+              dragConstraints={{ left: 0, right: 0 }}
+              dragElastic={{ left: 0, right: 0.7 }}
+              dragSnapToOrigin={true}
+              onDragEnd={(_event, dragInfo) => {
+                if (dragInfo.offset.x > 50 || dragInfo.velocity.x > 200) {
+                  setError('');
+                  if (sources.isWaitingForLocalMap) sources.provideLocalMapFiles([]);
+                }
+              }}
+              className="pointer-events-auto w-[min(34rem,calc(100vw-1.5rem))]"
+              aria-live="assertive"
+              variant={alertVariant}
+            >
+              <span className="flex items-center gap-2">
+                <AlertCircle
+                  className={cn(
+                    'size-12 shrink-0',
+                    alertVariant === 'destructive' ? 'text-destructive' : 'text-blue-300',
+                  )}
+                />
+                <span className="leading-relaxed">
+                  {alertMessage.split(/(\s+)/).map((token, index) => {
+                    if (token.trim().length >= 20) {
+                      return <CollapsibleWord key={index} word={token} />;
+                    }
+                    return <span key={index}>{token}</span>;
+                  })}
+                </span>
+              </span>
 
-      {error !== '' && (
-        <Alert
-          className="fixed bottom-20 left-1/2 z-50 w-[min(34rem,calc(100vw-1.5rem))] -translate-x-1/2"
-          aria-live="assertive"
-        >
-          <span className="flex items-center gap-2">
-            <AlertCircle className="text-destructive size-4 shrink-0" />
-            {error}
-          </span>
-          {partyActive && party.canRetryMap && (
-            <Button variant="outline" size="sm" onClick={party.retryMap}>
-              {partyT('retry')}
-            </Button>
+              {partyActive && party.canRetryMap && (
+                <Button variant="outline" size="sm" onClick={party.retryMap}>
+                  {partyT('retry')}
+                </Button>
+              )}
+
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label={t(alertVariant === 'destructive' ? 'dismissError' : 'dismissInfo')}
+                onClick={() => {
+                  setError('');
+                  if (sources.isWaitingForLocalMap) sources.provideLocalMapFiles([]);
+                }}
+              >
+                <X />
+              </Button>
+            </MotionAlert>
           )}
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            aria-label={t('dismissError')}
-            onClick={() => {
-              setError('');
-            }}
-          >
-            <X />
-          </Button>
-        </Alert>
-      )}
+        </AnimatePresence>
+      </div>
       <SettingsDrawer
         open={settingsOpen}
         settings={partyActive && !partyIsHost ? effectiveSettings : settings}

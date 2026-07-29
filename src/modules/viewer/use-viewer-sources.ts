@@ -10,8 +10,10 @@ import { LiveMapCache } from '../live/live-map-cache';
 import { useViewerFileSource } from './use-viewer-file-source';
 import { useViewerRemoteSource } from './use-viewer-remote-source';
 
+import type { AlertState } from '@/modules/viewer/viewer-types';
+
 interface UseViewerSourcesOptions {
-  setError: (message: string) => void;
+  setError: (alert: AlertState) => void;
   setSettings: Dispatch<SetStateAction<ViewerSettings>>;
   onClearViewer: () => void;
   onMapLoaded: () => void;
@@ -51,6 +53,8 @@ export function useViewerSources({ setError, setSettings, onClearViewer, onMapLo
     loadFiles(selectedFiles: File[]) {
       return files.loadFiles(selectedFiles, remote.resolveReplayMap);
     },
+    isWaitingForLocalMap: files.isWaitingForLocalMap,
+    provideLocalMapFiles: files.provideLocalMapFiles,
     loadLookup: remote.loadLookup,
     async loadLiveReplay(hash: string, replay: Replay) {
       const requestId = files.beginSourceRequest();

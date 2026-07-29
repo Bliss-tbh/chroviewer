@@ -18,7 +18,7 @@ import type {
 } from '../../sources/source-types';
 import { parseMapPackage } from './parse-map-package';
 import { sourceErrorMessage } from './source-error-message';
-import type { DifficultyRow, MapIdentity, MapMeta, ViewerSourceLink } from './viewer-types';
+import type { AlertState, DifficultyRow, MapIdentity, MapMeta, ViewerSourceLink } from './viewer-types';
 
 export interface PendingSharedView {
   autoplay?: boolean;
@@ -35,7 +35,7 @@ export interface LoadedSourceContext {
 }
 
 interface UseViewerFileSourceOptions {
-  setError: (message: string) => void;
+  setError: (alert: AlertState) => void;
   onClearViewer: () => void;
   onMapLoaded: () => void;
   onSourceLoaded: () => void;
@@ -72,6 +72,8 @@ export function useViewerFileSource({
   const replayRef = useRef<Replay | null>(null);
   const audioDataRef = useRef<ArrayBuffer | null>(null);
   const pendingSharedViewRef = useRef<PendingSharedView | null>(null);
+  const neededMap = useRef<((files: File[]) => void) | null>(null);
+  const [needMap, setNeedMap] = useState(false);
   const sourceGenerationRef = useRef(0);
   const [mapMeta, setMapMeta] = useState<MapMeta | null>(null);
   const [coverUrl, setCoverUrl] = useState<string | null>(null);
@@ -107,6 +109,17 @@ export function useViewerFileSource({
 
   function isSourceRequestCurrent(requestId: number) {
     return sourceGenerationRef.current === requestId;
+  }
+
+  function giveNeededMap(newFiles: File[]) {
+    if (neededMap.current) {
+      neededMap.current(newFiles);
+      neededMap.current = null;
+      setNeedMap(false);
+      setError('');
+      return true;
+    }
+    return false;
   }
 
   async function parseReplay(data: ArrayBuffer, source: SourceError['source'] = 'local') {
@@ -223,6 +236,9 @@ export function useViewerFileSource({
     onClearViewer();
     revokeCover();
     setCoverUrl(null);
+    neededMap.current = null;
+    setNeedMap(false);
+    setError('');
   }
 
   async function loadFiles(
@@ -239,55 +255,59 @@ export function useViewerFileSource({
       const sourceFiles: MapSourceFile[] = [];
       let replay: Replay | null = null;
       let identity: MapIdentity | undefined;
-      for (const file of files) {
-        if (!isSourceRequestCurrent(requestId)) return Result.ok(undefined);
-        if (/\.zip$/i.test(file.name)) {
-          const data = yield* Result.await(
-            Result.tryPromise({
-              try: () => file.arrayBuffer(),
-              catch: (cause) =>
-                sourceError(cause, {
-                  message: `${file.name} could not be read`,
-                  source: 'local',
-                  operation: 'read-local-file',
-                }),
-            }),
-          );
+      async function* processFileList(fileList: File[]) {
+        for (const file of fileList) {
           if (!isSourceRequestCurrent(requestId)) return Result.ok(undefined);
-          const archive = yield* Result.await(extractMapArchive(new Uint8Array(data)));
-          if (!isSourceRequestCurrent(requestId)) return Result.ok(undefined);
-          sourceFiles.push(...archive);
-        } else if (/\.(dat|bsor)$/i.test(file.name)) {
-          const data = yield* Result.await(
-            Result.tryPromise({
-              try: () => file.arrayBuffer(),
-              catch: (cause) =>
-                sourceError(cause, {
-                  message: `${file.name} could not be read`,
-                  source: 'local',
-                  operation: 'read-local-file',
-                }),
-            }),
-          );
-          if (!isSourceRequestCurrent(requestId)) return Result.ok(undefined);
-          const bytes = new Uint8Array(data);
-          if (isScoreSaberReplay(bytes) || isBeatLeaderReplay(bytes)) {
-            if (replay !== null) {
-              return Result.err(
-                new SourceError({
-                  message: t('errors.oneReplay'),
-                  source: 'local',
-                  operation: 'validate-replay-files',
-                }),
-              );
-            }
-            replay = yield* Result.await(parseReplay(data));
+          if (/\.zip$/i.test(file.name)) {
+            const data = yield* Result.await(
+              Result.tryPromise({
+                try: () => file.arrayBuffer(),
+                catch: (cause) =>
+                  sourceError(cause, {
+                    message: `${file.name} could not be read`,
+                    source: 'local',
+                    operation: 'read-local-file',
+                  }),
+              }),
+            );
             if (!isSourceRequestCurrent(requestId)) return Result.ok(undefined);
-            const legacyMetadata = legacyMetadataFromFilename(file.name);
-            if (legacyMetadata !== null) applyLegacyScoreSaberMetadata(replay, legacyMetadata);
+            const archive = yield* Result.await(extractMapArchive(new Uint8Array(data)));
+            if (!isSourceRequestCurrent(requestId)) return Result.ok(undefined);
+            sourceFiles.push(...archive);
+          } else if (/\.(dat|bsor)$/i.test(file.name)) {
+            const data = yield* Result.await(
+              Result.tryPromise({
+                try: () => file.arrayBuffer(),
+                catch: (cause) =>
+                  sourceError(cause, {
+                    message: `${file.name} could not be read`,
+                    source: 'local',
+                    operation: 'read-local-file',
+                  }),
+              }),
+            );
+            if (!isSourceRequestCurrent(requestId)) return Result.ok(undefined);
+            const bytes = new Uint8Array(data);
+            if (isScoreSaberReplay(bytes) || isBeatLeaderReplay(bytes)) {
+              if (replay !== null) {
+                return Result.err(
+                  new SourceError({
+                    message: t('errors.oneReplay'),
+                    source: 'local',
+                    operation: 'validate-replay-files',
+                  }),
+                );
+              }
+              replay = yield* Result.await(parseReplay(data));
+              if (!isSourceRequestCurrent(requestId)) return Result.ok(undefined);
+              const legacyMetadata = legacyMetadataFromFilename(file.name);
+              if (legacyMetadata !== null) applyLegacyScoreSaberMetadata(replay, legacyMetadata);
+            } else sourceFiles.push(file);
           } else sourceFiles.push(file);
-        } else sourceFiles.push(file);
+        }
       }
+      const firstProcess = yield* processFileList(files);
+      if (firstProcess?.isErr()) return firstProcess;
       if (replay !== null && sourceFiles.length === 0) {
         const hash = replayMapHash(replay);
         if (hash === null) {
@@ -299,10 +319,25 @@ export function useViewerFileSource({
             }),
           );
         }
-        const source = yield* Result.await(resolveReplayMap(hash));
+
+        const sourceResult = await resolveReplayMap(hash);
         if (!isSourceRequestCurrent(requestId)) return Result.ok(undefined);
-        sourceFiles.push(...source.files);
-        identity = { key: source.key, hash: source.hash };
+        if (sourceResult.isOk()) {
+          sourceFiles.push(...sourceResult.value.files);
+          identity = { key: sourceResult.value.key, hash: sourceResult.value.hash };
+        } else {
+          setNeedMap(true);
+          setError({ message: "Couldn't find replay map on BeatSaver: Please upload the map", type: 'informative' });
+          const newFiles = await new Promise<File[]>((resolve) => {
+            neededMap.current = resolve;
+          });
+          if (!isSourceRequestCurrent(requestId)) return Result.ok(undefined);
+          const fallbackProcess = yield* processFileList(newFiles);
+          if (fallbackProcess?.isErr()) return fallbackProcess;
+          if (sourceFiles.length === 0) {
+            return Result.err(sourceResult.error);
+          }
+        }
       }
       if (!isSourceRequestCurrent(requestId)) return Result.ok(undefined);
       if (replay !== null) pendingSharedViewRef.current = {};
@@ -342,5 +377,7 @@ export function useViewerFileSource({
     shareScoreIdBL,
     songBpm,
     sourceLink,
+    isWaitingForLocalMap: needMap,
+    provideLocalMapFiles: giveNeededMap,
   };
 }
